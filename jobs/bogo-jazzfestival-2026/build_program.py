@@ -41,21 +41,26 @@ WHITE = (255, 255, 255)
 ORANGE_HEAD = (250, 166, 25)
 PRACTICAL_YELLOW = (253, 218, 17)
 
-# 2025 type is sheared, not rotated: letter stems stay vertical, the baseline
-# follows the bands (dy/dx). Negative k = right side of the line goes up.
-SHEAR_TOP = math.tan(math.radians(-3.0))
-SHEAR_MID = math.tan(math.radians(-3.8))
-SHEAR_LOW = math.tan(math.radians(-2.2))
-SHEAR_BOT = math.tan(math.radians(-2.0))
-SHEAR_TICKET = math.tan(math.radians(-3.3))
+# 2025 shears every band the same way: right side up (image dy/dx < 0).
+# Letter stems stay vertical; the baseline follows the magenta rails.
+# Measured on a 400 dpi flatten of source-2025-design.pdf:
+#   welcome rails -3.00°, Friday rails -3.88/-4.17°, Saturday rails -2.21/-2.47°,
+#   tickets -3.25°. Positive shear was tried against photo descriptions and
+#   put the yellow bands on the opposite diagonal from last year’s file.
+SHEAR_GREEN = math.tan(math.radians(-3.0))
+SHEAR_GREEN_BOT = math.tan(math.radians(-2.0))
+SHEAR_YELLOW = math.tan(math.radians(-3.0))
+SHEAR_YELLOW_MID = math.tan(math.radians(-4.0))
+SHEAR_YELLOW_LOW = math.tan(math.radians(-2.3))
+SHEAR_TICKET = math.tan(math.radians(-3.25))
 
+# Polygon order: top-left, top-right, bottom-right, bottom-left (PDF points).
 PAGE1_BANDS = [
     [(0.0, 116.62), (PAGE_W, 94.63), (PAGE_W, 155.79), (0.0, 177.77)],
     [(0.0, 277.11), (PAGE_W, 248.65), (PAGE_W, 336.50), (0.0, 367.09)],
     [(0.0, 435.89), (PAGE_W, 419.69), (PAGE_W, 497.63), (0.0, 515.72)],
 ]
 
-SLANT_K = -0.052336
 MAX_LINE = PAGE_W - 24
 
 FONT_FILES = {
@@ -160,27 +165,29 @@ def draw_band(draw: ImageDraw.ImageDraw, pts: list[tuple[float, float]]) -> None
     dx = 20
     width = max(2, round(4 * SCALE))
 
-    def edge(p0: tuple[float, float], p1: tuple[float, float], sign: float) -> None:
+    def edge(p0: tuple[float, float], p1: tuple[float, float]) -> None:
         x0, y0 = p0
         x1, y1 = p1
-        a = pt_xy(x0 - dx, y0 - SLANT_K * dx * sign)
-        b = pt_xy(x1 + dx, y1 + SLANT_K * dx * sign)
+        k = (y1 - y0) / (x1 - x0)
+        a = pt_xy(x0 - dx, y0 - k * dx)
+        b = pt_xy(x1 + dx, y1 + k * dx)
         draw.line([a, b], fill=MAGENTA, width=width)
 
-    edge(top_l, top_r, 1)
-    edge(bot_l, bot_r, 1)
+    edge(top_l, top_r)
+    edge(bot_l, bot_r)
 
 
 def load_source_page(index: int) -> Image.Image:
     """Prefer a user-supplied raster; otherwise render the 2025 PDF at DPI."""
-    for ext in ("png", "tif", "tiff", "jpg", "jpeg"):
-        path = ROOT / f"source-2025-p{index + 1}.{ext}"
-        if path.exists():
-            im = Image.open(path).convert("RGB")
-            if im.size != (PX_W, PX_H):
-                im = im.resize((PX_W, PX_H), Image.Resampling.LANCZOS)
-            print(f"Using {path.name} ({im.size[0]}×{im.size[1]})")
-            return im
+    for name in (f"source-2025-p{index + 1}", f"source-2025-page{index + 1}", f"last-year-p{index + 1}"):
+        for ext in ("png", "tif", "tiff", "jpg", "jpeg"):
+            path = ROOT / f"{name}.{ext}"
+            if path.exists():
+                im = Image.open(path).convert("RGB")
+                if im.size != (PX_W, PX_H):
+                    im = im.resize((PX_W, PX_H), Image.Resampling.LANCZOS)
+                print(f"Using {path.name} ({im.size[0]}×{im.size[1]})")
+                return im
     src = pymupdf.open(SOURCE_PDF)
     pix = src[index].get_pixmap(matrix=pymupdf.Matrix(SCALE, SCALE), alpha=False)
     im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
@@ -254,15 +261,15 @@ def build_page1() -> Image.Image:
     for band in PAGE1_BANDS:
         draw_band(draw, band)
 
-    draw_text(im, "BOGØ", (12.17, 64.94), "impact", 57.3, YELLOW_TEXT, shear=SHEAR_TOP)
-    draw_text(im, " JAZZFESTIVAL", (152.23, 57.60), "impact", 42.7, YELLOW_TEXT, shear=SHEAR_TOP)
-    draw_text(im, "3-5. SEPTEMBER 2026", (31.43, 98.38), "impact", 37.9, YELLOW_TEXT, shear=SHEAR_TOP)
+    draw_text(im, "BOGØ", (12.17, 64.94), "impact", 57.3, YELLOW_TEXT, shear=SHEAR_GREEN)
+    draw_text(im, " JAZZFESTIVAL", (152.23, 57.60), "impact", 42.7, YELLOW_TEXT, shear=SHEAR_GREEN)
+    draw_text(im, "3-5. SEPTEMBER 2026", (31.43, 98.38), "impact", 37.9, YELLOW_TEXT, shear=SHEAR_GREEN)
 
-    draw_centered(im, "Velkommen til en herlig koncert med noget", 143.19, "impact", 22.2, BLUE, shear=SHEAR_TOP)
-    draw_centered(im, "af det bedste og mest uforfalskede JAZZ!", 167.18, "impact", 22.2, BLUE, shear=SHEAR_TOP)
-    draw_centered(im, "program:", 199.57, "impact", 26.8, YELLOW_TEXT, shear=SHEAR_TOP)
+    draw_centered(im, "Velkommen til en herlig koncert med noget", 143.19, "impact", 22.2, BLUE, shear=SHEAR_YELLOW)
+    draw_centered(im, "af det bedste og mest uforfalskede JAZZ!", 167.18, "impact", 22.2, BLUE, shear=SHEAR_YELLOW)
+    draw_centered(im, "program:", 199.57, "impact", 26.8, YELLOW_TEXT, shear=SHEAR_GREEN)
 
-    draw_centered(im, "Torsdag d. 3. sep. Kl. 20.00, Jacob Fischer Trio", 236.58, "impact", 21.2, WHITE, shear=SHEAR_TOP)
+    draw_centered(im, "Torsdag d. 3. sep. Kl. 20.00, Jacob Fischer Trio", 236.58, "impact", 21.2, WHITE, shear=SHEAR_GREEN)
     draw_centered(
         im,
         "Jacob Fischer: Guitar   Zier Romme Larsen: Piano   Rosa Salamon: Kontrabas/vokal",
@@ -270,11 +277,11 @@ def build_page1() -> Image.Image:
         "impact",
         10.8,
         WHITE,
-        shear=SHEAR_TOP,
+        shear=SHEAR_GREEN,
     )
 
-    draw_centered(im, "Fredag d. 4. sep. Kl. 20.00:", 299.98, "impact", 21.2, BLUE, shear=SHEAR_MID)
-    draw_centered(im, "Baun on Beatles", 323.69, "impact", 21.2, BLUE, shear=SHEAR_MID)
+    draw_centered(im, "Fredag d. 4. sep. Kl. 20.00:", 299.98, "impact", 21.2, BLUE, shear=SHEAR_YELLOW_MID)
+    draw_centered(im, "Baun on Beatles", 323.69, "impact", 21.2, BLUE, shear=SHEAR_YELLOW_MID)
     draw_centered(
         im,
         "Søren Baun: Piano/vocal   Andreas Møllerhøj: Kontrabas   Ulrik Brohuus: Trommer",
@@ -282,11 +289,11 @@ def build_page1() -> Image.Image:
         "impact",
         10.8,
         BLUE,
-        shear=SHEAR_MID,
+        shear=SHEAR_YELLOW_MID,
     )
 
-    draw_centered(im, "Lørdag d. 5. sep. Kl. 16.00:", 378.0, "impact", 21.6, WHITE, shear=SHEAR_TOP)
-    draw_centered(im, "Dynamic", 402.0, "impact", 21.6, WHITE, shear=SHEAR_TOP)
+    draw_centered(im, "Lørdag d. 5. sep. Kl. 16.00:", 378.0, "impact", 21.6, WHITE, shear=SHEAR_GREEN)
+    draw_centered(im, "Dynamic", 402.0, "impact", 21.6, WHITE, shear=SHEAR_GREEN)
     dyn_musicians = wrap_parts(
         [
             "Paul Kim: Bass/dirigent",
@@ -302,7 +309,7 @@ def build_page1() -> Image.Image:
     )
     y = 448.0
     for line in dyn_musicians:
-        draw_centered(im, line, y, "impact", 12.5, BLUE, shear=SHEAR_LOW)
+        draw_centered(im, line, y, "impact", 12.5, BLUE, shear=SHEAR_YELLOW_LOW)
         y += 16.5
 
     draw_centered(
@@ -312,7 +319,7 @@ def build_page1() -> Image.Image:
         "impact",
         20.2,
         WHITE,
-        shear=SHEAR_BOT,
+        shear=SHEAR_GREEN_BOT,
     )
     sat_musicians = wrap_parts(
         [
@@ -325,7 +332,7 @@ def build_page1() -> Image.Image:
     )
     y = 565.72
     for line in sat_musicians:
-        draw_centered(im, line, y, "impact", 12.5, WHITE, shear=SHEAR_BOT)
+        draw_centered(im, line, y, "impact", 12.5, WHITE, shear=SHEAR_GREEN_BOT)
         y += 14.2
 
     return im
@@ -371,11 +378,11 @@ def build_page2() -> Image.Image:
     # Remove Billet H (no eighth ticket this year), including its magenta outline.
     cover_rect(im, (276, 160, PAGE_W + 6, 218), GREEN, pad_pt=0.8)
 
-    draw_text(im, "PRAKTISKE OPLYSNINGER", (20.98, 55.23), "impact", 34.6, PRACTICAL_YELLOW)
-    draw_centered(im, "Dørene åbnes kl. 18.00 torsdag og fredag, vi spiser kl. 19.00 begge dage.", 75.13, "impact", 12.6, WHITE)
-    draw_centered(im, "Torsdag: Chicken in Forest og fredag: Gumbo", 85.93, "impact", 12.6, WHITE)
-    draw_centered(im, "Lørdag åbnes dørene kl. 15.00 og vores jazzthai middag", 104.47, "impact", 12.6, WHITE)
-    draw_centered(im, "med græsk inspiration på grillen skal nydes fra kl. 18.00.", 122.88, "impact", 12.6, WHITE)
+    draw_text(im, "PRAKTISKE OPLYSNINGER", (20.98, 55.23), "impact", 34.6, PRACTICAL_YELLOW, shear=SHEAR_GREEN)
+    draw_centered(im, "Dørene åbnes kl. 18.00 torsdag og fredag, vi spiser kl. 19.00 begge dage.", 75.13, "impact", 12.6, WHITE, shear=SHEAR_GREEN)
+    draw_centered(im, "Torsdag: Chicken in Forest og fredag: Gumbo", 85.93, "impact", 12.6, WHITE, shear=SHEAR_GREEN)
+    draw_centered(im, "Lørdag åbnes dørene kl. 15.00 og vores jazzthai middag", 104.47, "impact", 12.6, WHITE, shear=SHEAR_GREEN)
+    draw_centered(im, "med græsk inspiration på grillen skal nydes fra kl. 18.00.", 122.88, "impact", 12.6, WHITE, shear=SHEAR_GREEN)
 
     tickets = [
         ((13.64, 155.50), (14.14, 165.70), "Billet A: ...................750,-", "Hele festivalen med mad alle dage", 8.12),

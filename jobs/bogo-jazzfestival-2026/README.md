@@ -2,7 +2,7 @@
 
 Print-ready A5 program (148 × 210 mm) based on last year’s InDesign layout, with this year’s manuscript text.
 
-The builder works in **raster** at **400 dpi** so type can be sheared to match the slanted bands (upright stems, slanted baseline — same as 2025). The print PDF embeds those images.
+The builder works in **raster** at **400 dpi** so type can be sheared to match last year’s bands (upright stems, baseline following the magenta rails — right side up). The print PDF embeds those images.
 
 ## Output
 
@@ -23,12 +23,7 @@ Fonts are Impact + Impress BT, extracted from the 2025 file.
 - `source-2025-design.pdf` — last year’s printed program (layout, colours, ticket boxes, logo)
 - `source-2026-text.pdf` — this year’s Word manuscript (line-up, prices, sponsors)
 
-Optional: drop in a cleaner raster of last year’s pages (InDesign PNG/TIFF export) as:
-
-- `source-2025-p1.png` (or `.tif`)
-- `source-2025-p2.png` (or `.tif`)
-
-Any high-res A5 is fine; the script scales to 2331 × 3307 px (400 dpi). A manuscript raster is not needed.
+Optional: drop a cleaner raster of last year’s pages into this folder as `source-2025-p1.png` and `source-2025-p2.png` (PNG/TIFF/JPEG). Chat-attached photos do not land in the repo; GitHub or a folder drop does. Any high-res A5 is fine; the script scales to 400 dpi. A manuscript raster is not needed.
 
 ## What changed vs 2025
 
