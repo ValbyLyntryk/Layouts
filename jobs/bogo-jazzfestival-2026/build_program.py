@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import pymupdf
@@ -43,25 +44,26 @@ PRACTICAL_YELLOW = (253, 218, 17)
 
 # 2025 shears every band the same way: right side up (image dy/dx < 0).
 # Letter stems stay vertical; the baseline follows the magenta rails.
-# Measured on a 400 dpi flatten of source-2025-design.pdf:
-#   welcome rails -3.00°, Friday rails -3.88/-4.17°, Saturday rails -2.21/-2.47°,
-#   tickets -3.25°. Positive shear was tried against photo descriptions and
-#   put the yellow bands on the opposite diagonal from last year’s file.
-SHEAR_GREEN = math.tan(math.radians(-3.0))
-SHEAR_GREEN_BOT = math.tan(math.radians(-2.0))
-SHEAR_YELLOW = math.tan(math.radians(-3.0))
-SHEAR_YELLOW_MID = math.tan(math.radians(-4.0))
-SHEAR_YELLOW_LOW = math.tan(math.radians(-2.3))
+SHEAR = math.tan(math.radians(-3.0))
 SHEAR_TICKET = math.tan(math.radians(-3.25))
+CX = PAGE_W / 2.0
 
-# Polygon order: top-left, top-right, bottom-right, bottom-left (PDF points).
-PAGE1_BANDS = [
-    [(0.0, 116.62), (PAGE_W, 94.63), (PAGE_W, 155.79), (0.0, 177.77)],
-    [(0.0, 277.11), (PAGE_W, 248.65), (PAGE_W, 336.50), (0.0, 367.09)],
-    [(0.0, 435.89), (PAGE_W, 419.69), (PAGE_W, 497.63), (0.0, 515.72)],
-]
+# Padding is the air from ink to the band edge (or to the neighbouring magenta).
+PAD_YELLOW = 13.0
+PAD_GREEN = 11.0
+MARGIN_MIN_TOP = 16.0
+MARGIN_MIN_BOT = 12.0
+# Heavy Impact caps read high in a band; sit the block a hair lower.
+OPTICAL_DOWN = 2.2
 
-MAX_LINE = PAGE_W - 24
+MAX_LINE = PAGE_W - 28
+
+# Kept for page 2 overlays that still use the old names.
+SHEAR_GREEN = SHEAR
+SHEAR_GREEN_BOT = SHEAR
+SHEAR_YELLOW = SHEAR
+SHEAR_YELLOW_MID = SHEAR
+SHEAR_YELLOW_LOW = SHEAR
 
 FONT_FILES = {
     "impact": IMPACT_PATH,
@@ -108,6 +110,121 @@ def wrap_parts(parts: list[str], fontname: str, size: float, max_width: float = 
     return lines
 
 
+@dataclass
+class LineSpec:
+    text: str
+    size: float
+    fill: tuple[int, int, int]
+    font: str = "impact"
+    leading: float | None = None
+    gap_after: float = 0.0
+
+
+@dataclass
+class Section:
+    name: str
+    kind: str  # "yellow" | "green" | "header"
+    lines: list[LineSpec]
+    pad: float
+    y0: float = 0.0
+    y1: float = 0.0
+    first_baseline: float = 0.0
+    baselines: list[float] | None = None
+
+
+def ink_ls(fontname: str, text: str, size: float) -> tuple[float, float]:
+    """Ink top/bottom relative to baseline, in pt (top is negative)."""
+    font = load_font(fontname, size)
+    _x0, y0, _x1, y1 = font.getbbox(text or "H", anchor="ls")
+    return y0 / SCALE, y1 / SCALE
+
+
+def measure_lines(lines: list[LineSpec]) -> tuple[float, float, list[float]]:
+    """Return (ink height, first baseline from ink top, baselines from first)."""
+    if not lines:
+        return 0.0, 0.0, []
+    bases = [0.0]
+    for i, line in enumerate(lines[:-1]):
+        nxt = lines[i + 1]
+        lead = line.leading if line.leading is not None else max(line.size, nxt.size) * 1.12
+        bases.append(bases[-1] + lead + line.gap_after)
+    top0, _ = ink_ls(lines[0].font, lines[0].text, lines[0].size)
+    _, botn = ink_ls(lines[-1].font, lines[-1].text, lines[-1].size)
+    ink_top = bases[0] + top0
+    ink_bot = bases[-1] + botn
+    return ink_bot - ink_top, -ink_top, bases
+
+
+def band_poly(y_top: float, y_bot: float, k: float = SHEAR) -> list[tuple[float, float]]:
+    """Parallelogram whose top/bottom sit at y_top/y_bot on the page centre."""
+
+    def yat(yc: float, x: float) -> float:
+        return yc + k * (x - CX)
+
+    return [
+        (0.0, yat(y_top, 0.0)),
+        (PAGE_W, yat(y_top, PAGE_W)),
+        (PAGE_W, yat(y_bot, PAGE_W)),
+        (0.0, yat(y_bot, 0.0)),
+    ]
+
+
+def layout_sections(sections: list[Section]) -> None:
+    """Stack sections, keep equal pad in each band, dump leftover into page margins."""
+
+    def pack() -> tuple[list[float], list[float], list[list[float]], float]:
+        heights: list[float] = []
+        firsts: list[float] = []
+        bases_all: list[list[float]] = []
+        for sec in sections:
+            h, first, bases = measure_lines(sec.lines)
+            heights.append(h)
+            firsts.append(first)
+            bases_all.append(bases)
+        content = sum(h + 2 * sec.pad for h, sec in zip(heights, sections))
+        room = PAGE_H - MARGIN_MIN_TOP - MARGIN_MIN_BOT - content
+        return heights, firsts, bases_all, room
+
+    heights, firsts, bases_all, room = pack()
+    if room < -0.5:
+        scale = (PAGE_H - MARGIN_MIN_TOP - MARGIN_MIN_BOT) / sum(
+            h + 2 * sec.pad for h, sec in zip(heights, sections)
+        )
+        for sec in sections:
+            sec.pad = max(7.0, sec.pad * scale)
+        heights, firsts, bases_all, room = pack()
+    elif room > 1.0:
+        extra = room / (2 * len(sections))
+        for sec in sections:
+            sec.pad += extra
+        heights, firsts, bases_all, room = pack()
+
+    y = MARGIN_MIN_TOP + max(0.0, room) * 0.45
+    for sec, h, first, bases in zip(sections, heights, firsts, bases_all):
+        sec.y0 = y
+        sec.y1 = y + sec.pad + h + sec.pad
+        nudge = 0.0 if sec.kind == "header" else OPTICAL_DOWN
+        sec.first_baseline = y + sec.pad + first + nudge
+        sec.baselines = [sec.first_baseline + b for b in bases]
+        y = sec.y1
+    last = sections[-1]
+    trim_bot = PAGE_H - 6.0
+    if last.y1 > trim_bot:
+        last.y1 = trim_bot
+        h = measure_lines(last.lines)[0]
+        last.pad = (last.y1 - last.y0 - h) / 2
+        first = measure_lines(last.lines)[1]
+        nudge = 0.0 if last.kind == "header" else OPTICAL_DOWN
+        last.first_baseline = last.y0 + last.pad + first + nudge
+        last.baselines = [last.first_baseline + b for b in measure_lines(last.lines)[2]]
+
+
+def draw_section_text(im: Image.Image, sec: Section) -> None:
+    assert sec.baselines is not None
+    for line, y in zip(sec.lines, sec.baselines):
+        draw_centered(im, line.text, y, line.font, line.size, line.fill, shear=SHEAR)
+
+
 def shear_layer(layer: Image.Image, k: float, origin: tuple[float, float]) -> Image.Image:
     """Vertical shear around origin: stems stay upright, baseline slope is k (dy/dx)."""
     x0, _y0 = origin
@@ -125,14 +242,20 @@ def draw_text(
     fill: tuple[int, int, int],
     shear: float = 0.0,
     anchor: str = "ls",
+    shear_x: float | None = None,
 ) -> None:
-    """Draw text. origin_pt is PDF-space; anchor ls/ms is baseline left/center."""
+    """Draw text. origin_pt is PDF-space; anchor ls/ms is baseline left/center.
+
+    shear_x is the page-x (pt) the shear is taken around. Page 1 bands are
+    defined about the centre, so body type should shear about CX too.
+    """
     font = load_font(fontname, size_pt)
     pos = pt_xy(*origin_pt)
     layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
     ImageDraw.Draw(layer).text(pos, text, font=font, fill=fill + (255,), anchor=anchor)
     if shear:
-        layer = shear_layer(layer, shear, pos)
+        sx = pt(shear_x) if shear_x is not None else pos[0]
+        layer = shear_layer(layer, shear, (sx, pos[1]))
     if im.mode != "RGBA":
         rgba = im.convert("RGBA")
         rgba.alpha_composite(layer)
@@ -152,7 +275,7 @@ def draw_centered(
     x_center_pt: float | None = None,
 ) -> None:
     cx = PAGE_W / 2 if x_center_pt is None else x_center_pt
-    draw_text(im, text, (cx, y_pt), fontname, size_pt, fill, shear=shear, anchor="ms")
+    draw_text(im, text, (cx, y_pt), fontname, size_pt, fill, shear=shear, anchor="ms", shear_x=CX)
 
 
 def poly_px(pts: list[tuple[float, float]]) -> list[tuple[int, int]]:
@@ -255,46 +378,29 @@ def cover_spans_local(im: Image.Image, page: pymupdf.Page, prefixes: tuple[str, 
                         px[x, y] = sample
 
 
+def header_lockup_x() -> tuple[float, float, float, float, float]:
+    """BOGØ / JAZZFESTIVAL / date sizes and x positions, 2025-style left lockup."""
+    bogo_size, jazz_size, date_size = 56.0, 41.5, 35.5
+    left = 14.0
+    bogo_w = text_width_pt("impact", "BOGØ", bogo_size)
+    jazz_x = left + bogo_w + 4.0
+    return left, jazz_x, bogo_size, jazz_size, date_size
+
+
+def draw_header(im: Image.Image, sec: Section) -> None:
+    left, jazz_x, bogo_size, jazz_size, date_size = header_lockup_x()
+    bogo_y = sec.first_baseline
+    bogo_top, _ = ink_ls("impact", "BOGØ", bogo_size)
+    jazz_top, _ = ink_ls("impact", "JAZZFESTIVAL", jazz_size)
+    jazz_y = bogo_y + bogo_top - jazz_top  # cap-tops aligned
+    date_y = sec.baselines[1] if sec.baselines and len(sec.baselines) > 1 else bogo_y + 36
+    draw_text(im, "BOGØ", (left, bogo_y), "impact", bogo_size, YELLOW_TEXT, shear=SHEAR, shear_x=CX)
+    draw_text(im, "JAZZFESTIVAL", (jazz_x, jazz_y), "impact", jazz_size, YELLOW_TEXT, shear=SHEAR, shear_x=CX)
+    draw_text(im, "3-5. SEPTEMBER 2026", (left, date_y), "impact", date_size, YELLOW_TEXT, shear=SHEAR, shear_x=CX)
+
+
 def build_page1() -> Image.Image:
-    im = Image.new("RGB", (PX_W, PX_H), GREEN)
-    draw = ImageDraw.Draw(im)
-    for band in PAGE1_BANDS:
-        draw_band(draw, band)
-
-    draw_text(im, "BOGØ", (12.17, 64.94), "impact", 57.3, YELLOW_TEXT, shear=SHEAR_GREEN)
-    draw_text(im, " JAZZFESTIVAL", (152.23, 57.60), "impact", 42.7, YELLOW_TEXT, shear=SHEAR_GREEN)
-    draw_text(im, "3-5. SEPTEMBER 2026", (31.43, 98.38), "impact", 37.9, YELLOW_TEXT, shear=SHEAR_GREEN)
-
-    draw_centered(im, "Velkommen til en herlig koncert med noget", 143.19, "impact", 22.2, BLUE, shear=SHEAR_YELLOW)
-    draw_centered(im, "af det bedste og mest uforfalskede JAZZ!", 167.18, "impact", 22.2, BLUE, shear=SHEAR_YELLOW)
-    draw_centered(im, "program:", 199.57, "impact", 26.8, YELLOW_TEXT, shear=SHEAR_GREEN)
-
-    draw_centered(im, "Torsdag d. 3. sep. Kl. 20.00, Jacob Fischer Trio", 236.58, "impact", 21.2, WHITE, shear=SHEAR_GREEN)
-    draw_centered(
-        im,
-        "Jacob Fischer: Guitar   Zier Romme Larsen: Piano   Rosa Salamon: Kontrabas/vokal",
-        257.93,
-        "impact",
-        10.8,
-        WHITE,
-        shear=SHEAR_GREEN,
-    )
-
-    draw_centered(im, "Fredag d. 4. sep. Kl. 20.00:", 299.98, "impact", 21.2, BLUE, shear=SHEAR_YELLOW_MID)
-    draw_centered(im, "Baun on Beatles", 323.69, "impact", 21.2, BLUE, shear=SHEAR_YELLOW_MID)
-    draw_centered(
-        im,
-        "Søren Baun: Piano/vocal   Andreas Møllerhøj: Kontrabas   Ulrik Brohuus: Trommer",
-        344.22,
-        "impact",
-        10.8,
-        BLUE,
-        shear=SHEAR_YELLOW_MID,
-    )
-
-    draw_centered(im, "Lørdag d. 5. sep. Kl. 16.00:", 378.0, "impact", 21.6, WHITE, shear=SHEAR_GREEN)
-    draw_centered(im, "Dynamic", 402.0, "impact", 21.6, WHITE, shear=SHEAR_GREEN)
-    dyn_musicians = wrap_parts(
+    dyn_mus = wrap_parts(
         [
             "Paul Kim: Bass/dirigent",
             "Kirstine Dahlberg: Sopran",
@@ -305,35 +411,112 @@ def build_page1() -> Image.Image:
             "Frederik Rejle: Guitar",
         ],
         "impact",
-        12.5,
+        12.0,
     )
-    y = 448.0
-    for line in dyn_musicians:
-        draw_centered(im, line, y, "impact", 12.5, BLUE, shear=SHEAR_YELLOW_LOW)
-        y += 16.5
-
-    draw_centered(
-        im,
-        "Lørdag d. 5. sep. Kl. 19.30: Sophisticated Ladies",
-        545.08,
-        "impact",
-        20.2,
-        WHITE,
-        shear=SHEAR_GREEN_BOT,
-    )
-    sat_musicians = wrap_parts(
+    ladies_mus = wrap_parts(
         [
             "Marie Louise Schmidt: Piano",
             "Helle Marstrand: Kontrabas",
             "Benita Haastrup: Percussion/trommer",
         ],
         "impact",
-        12.5,
+        12.0,
     )
-    y = 565.72
-    for line in sat_musicians:
-        draw_centered(im, line, y, "impact", 12.5, WHITE, shear=SHEAR_GREEN_BOT)
-        y += 14.2
+
+    _, _, bogo_size, _, date_size = header_lockup_x()
+
+    # Yellow / green / yellow / green / yellow: each yellow wraps one block
+    # of copy with equal air above and below the ink.
+    sections = [
+        Section(
+            "header",
+            "header",
+            [
+                LineSpec("BOGØ", bogo_size, YELLOW_TEXT, leading=35.0),
+                LineSpec("3-5. SEPTEMBER 2026", date_size, YELLOW_TEXT),
+            ],
+            pad=PAD_GREEN + 3,
+        ),
+        Section(
+            "welcome",
+            "yellow",
+            [
+                LineSpec("Velkommen til en herlig koncert med noget", 21.2, BLUE, leading=23.5),
+                LineSpec("af det bedste og mest uforfalskede JAZZ!", 21.2, BLUE),
+            ],
+            pad=PAD_YELLOW,
+        ),
+        Section(
+            "thursday",
+            "green",
+            [
+                LineSpec("program:", 23.5, YELLOW_TEXT, leading=26.5, gap_after=3.0),
+                LineSpec(
+                    "Torsdag d. 3. sep. Kl. 20.00, Jacob Fischer Trio",
+                    20.4,
+                    WHITE,
+                    leading=20.0,
+                    gap_after=3.5,
+                ),
+                LineSpec(
+                    "Jacob Fischer: Guitar   Zier Romme Larsen: Piano   Rosa Salamon: Kontrabas/vokal",
+                    10.8,
+                    WHITE,
+                ),
+            ],
+            pad=PAD_GREEN,
+        ),
+        Section(
+            "friday",
+            "yellow",
+            [
+                LineSpec("Fredag d. 4. sep. Kl. 20.00:", 20.8, BLUE, leading=22.8),
+                LineSpec("Baun on Beatles", 20.8, BLUE, leading=20.5, gap_after=3.0),
+                LineSpec(
+                    "Søren Baun: Piano/vocal   Andreas Møllerhøj: Kontrabas   Ulrik Brohuus: Trommer",
+                    10.8,
+                    BLUE,
+                ),
+            ],
+            pad=PAD_YELLOW,
+        ),
+        Section(
+            "dynamic",
+            "green",
+            [
+                LineSpec("Lørdag d. 5. sep. Kl. 16.00:", 20.8, WHITE, leading=22.8),
+                LineSpec("Dynamic", 20.8, WHITE, leading=20.5, gap_after=3.5),
+                *[LineSpec(line, 12.0, WHITE, leading=15.2) for line in dyn_mus],
+            ],
+            pad=PAD_GREEN,
+        ),
+        Section(
+            "ladies",
+            "yellow",
+            [
+                LineSpec("Lørdag d. 5. sep. Kl. 19.30:", 20.2, BLUE, leading=22.2),
+                LineSpec("Sophisticated Ladies", 20.2, BLUE, leading=20.0, gap_after=3.0),
+                *[LineSpec(line, 12.0, BLUE, leading=15.2) for line in ladies_mus],
+            ],
+            pad=PAD_YELLOW,
+        ),
+    ]
+    layout_sections(sections)
+
+    im = Image.new("RGB", (PX_W, PX_H), GREEN)
+    draw = ImageDraw.Draw(im)
+    for sec in sections:
+        if sec.kind == "yellow":
+            draw_band(draw, band_poly(sec.y0, sec.y1))
+
+    for sec in sections:
+        if sec.kind == "header":
+            draw_header(im, sec)
+        else:
+            draw_section_text(im, sec)
+
+    for sec in sections:
+        print(f"  p1 {sec.name:14} {sec.kind:6} {sec.y0:6.1f}–{sec.y1:6.1f}  pad={sec.pad:.1f}")
 
     return im
 

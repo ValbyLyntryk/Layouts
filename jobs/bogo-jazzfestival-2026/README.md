@@ -2,7 +2,7 @@
 
 Print-ready A5 program (148 × 210 mm) based on last year’s InDesign layout, with this year’s manuscript text.
 
-The builder works in **raster** at **400 dpi** so type can be sheared to match last year’s bands (upright stems, baseline following the magenta rails — right side up). The print PDF embeds those images.
+The builder works in **raster** at **400 dpi**. Type is sheared (upright stems, baseline on the magenta rails). Page 1 bands are sized to the 2026 copy, with even space above and below the ink in each band.
 
 ## Output
 
